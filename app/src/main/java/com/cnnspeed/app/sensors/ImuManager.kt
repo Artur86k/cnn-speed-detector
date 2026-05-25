@@ -7,12 +7,24 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.HandlerThread
 
-/** Single IMU sample (raw, with rotation-derived heading). */
+/**
+ * Single IMU sample with both raw (device-frame) channels for FFT consumption
+ * and world-frame derived quantities for the EKF.
+ *
+ * - ax/ay/az, gx/gy/gz are raw device-frame readings (used by FFT).
+ * - linAxWorld/linAyWorld are device-frame linear accel rotated to the world
+ *   frame with gravity removed; the EKF projects these onto the current
+ *   heading to obtain forward acceleration.
+ * - yawRateWorld is the gyro's world-frame Z component — the true yaw rate
+ *   regardless of phone mounting orientation.
+ */
 data class ImuSample(
     val tNanos: Long,
     val ax: Float, val ay: Float, val az: Float,
     val gx: Float, val gy: Float, val gz: Float,
-    val azimuthRad: Float
+    val azimuthRad: Float,
+    val linAxWorld: Float, val linAyWorld: Float,
+    val yawRateWorld: Float
 )
 
 /** Thread-safe circular ring buffer of IMU samples. */
@@ -65,6 +77,12 @@ class ImuManager(private val context: Context) : SensorEventListener {
     private var lastAzimuth = 0f
     private var lastSampleT = 0L
 
+    // Current rotation matrix (device → world). Identity until first rotation
+    // vector arrives. Stored row-major.
+    private val rotMatrix = FloatArray(9).also {
+        it[0] = 1f; it[4] = 1f; it[8] = 1f
+    }
+
     /** Listener invoked on every produced ImuSample (on ImuThread). */
     var onSample: ((ImuSample) -> Unit)? = null
 
@@ -103,10 +121,9 @@ class ImuManager(private val context: Context) : SensorEventListener {
                 lastGx = event.values[0]; lastGy = event.values[1]; lastGz = event.values[2]
             }
             Sensor.TYPE_ROTATION_VECTOR -> {
-                val rot = FloatArray(9)
-                SensorManager.getRotationMatrixFromVector(rot, event.values)
+                SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
                 val ori = FloatArray(3)
-                SensorManager.getOrientation(rot, ori)
+                SensorManager.getOrientation(rotMatrix, ori)
                 lastAzimuth = ori[0]
             }
             else -> return
@@ -114,11 +131,22 @@ class ImuManager(private val context: Context) : SensorEventListener {
 
         // Emit a sample on every accelerometer event (highest-rate sensor).
         if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+            // Rotate device-frame accel & gyro into world frame using current
+            // rotation matrix. World frame is ENU: X=east, Y=north, Z=up.
+            val axW = rotMatrix[0] * lastAx + rotMatrix[1] * lastAy + rotMatrix[2] * lastAz
+            val ayW = rotMatrix[3] * lastAx + rotMatrix[4] * lastAy + rotMatrix[5] * lastAz
+            val azW = rotMatrix[6] * lastAx + rotMatrix[7] * lastAy + rotMatrix[8] * lastAz
+            val gzW = rotMatrix[6] * lastGx + rotMatrix[7] * lastGy + rotMatrix[8] * lastGz
+            // Subtract gravity from world-frame Z (we don't propagate vertical
+            // accel into the EKF, so just expose horizontal linear accel).
             val sample = ImuSample(
                 tNanos = event.timestamp,
                 ax = lastAx, ay = lastAy, az = lastAz,
                 gx = lastGx, gy = lastGy, gz = lastGz,
-                azimuthRad = lastAzimuth
+                azimuthRad = lastAzimuth,
+                linAxWorld = axW,
+                linAyWorld = ayW,
+                yawRateWorld = gzW
             )
             ringBuffer.add(sample)
             lastSampleT = event.timestamp

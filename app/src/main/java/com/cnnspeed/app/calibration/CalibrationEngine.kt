@@ -10,12 +10,14 @@ import com.cnnspeed.app.ekf.EkfImuGnss
 import com.cnnspeed.app.sensors.GnssFix
 import com.cnnspeed.app.sensors.ImuSample
 import com.cnnspeed.app.sensors.SensorFusion
+import kotlin.math.cos
+import kotlin.math.sin
 
 /** Aggregated runtime state suitable for ViewModel consumption. */
 data class CalibState(
     val gnssSpeedMs: Float = 0f,
-    val ekfSpeedMs: Float = 0f,
-    val cnnEkfSpeedMs: Float = 0f,
+    val ekfSpeedMs: Float = 0f,           // EKF fused with IMU + GNSS only
+    val cnnEkfSpeedMs: Float = 0f,        // EKF fused with IMU + GNSS + CNN
     val hdop: Float = 99f,
     val satCount: Int = 0,
     val ekfQMean: Float = 0f,
@@ -27,15 +29,19 @@ data class CalibState(
 )
 
 /**
- * Master controller that owns the pipeline:
- *  IMU sample → bias correct → EKF predict → FFT extractor
- *  GNSS fix   → quality gate → EKF update  → Sage-Husa adapt → replay buffer
- *  FFT window → CNN embed   → head infer  → EKF measurement
+ * Master controller. Owns two EKFs running in parallel:
+ *   - [ekfNoCnn]: fused only with IMU and GNSS  → "EKF Speed" card
+ *   - [ekfWithCnn]: also fused with CNN updates → "EKF + CNN Speed" card
+ *
+ * Both EKFs receive identical predict steps and GNSS measurements so the only
+ * difference between them is whether the CNN's noisy speed estimate is folded
+ * in. This lets the UI compare the value the CNN adds.
  */
 class CalibrationEngine(context: Context) {
 
     val fusion = SensorFusion(context)
-    val ekf = EkfImuGnss()
+    val ekfNoCnn = EkfImuGnss()
+    val ekfWithCnn = EkfImuGnss()
     val biasEstimator = BiasEstimator()
     val qualityGate = GnssQualityGate()
     val replayBuffer = ReplayBuffer()
@@ -74,17 +80,22 @@ class CalibrationEngine(context: Context) {
     }
 
     private fun onImuSample(s: ImuSample) {
-        biasEstimator.update(s, lastGnssSpeedMs)
-
         val dt = if (lastImuTNanos == 0L) 0f else (s.tNanos - lastImuTNanos) / 1e9f
         lastImuTNanos = s.tNanos
 
-        val axCorr = biasEstimator.correctAx(s.ax)
-        val gzCorr = biasEstimator.correctGz(s.gz)
+        // Forward acceleration = world-frame horizontal accel projected onto
+        // the EKF's current heading. Using world-frame quantities means
+        // gravity has already been cancelled out (it stays in world-Z).
+        val psi = ekfNoCnn.headingRad()
+        val axForward = s.linAxWorld * cos(psi) + s.linAyWorld * sin(psi)
+        biasEstimator.update(axForward, s.yawRateWorld, lastGnssSpeedMs)
+        val axCorr = biasEstimator.correctAx(axForward)
+        val gzCorr = biasEstimator.correctGz(s.yawRateWorld)
         qualityGate.lastAxLongitudinal = axCorr
 
         if (dt in 0f..0.1f) {
-            ekf.predict(dt, axCorr, gzCorr)
+            ekfNoCnn.predict(dt, axCorr, gzCorr)
+            ekfWithCnn.predict(dt, axCorr, gzCorr)
         }
         fftExtractor.addSample(s)
         publishState()
@@ -94,9 +105,6 @@ class CalibrationEngine(context: Context) {
         lastGnssSpeedMs = fix.speedMs
 
         if (!gnssEnabled) {
-            // Debug mode: surface the raw reading but don't fuse it into the EKF
-            // and don't accumulate training samples. Lets us watch the EKF drift
-            // on IMU alone.
             gnssGoodSinceMs = 0L
             qualityGate.lastFix = fix
             qualityGate.lastGood = false
@@ -105,7 +113,8 @@ class CalibrationEngine(context: Context) {
         }
 
         val good = qualityGate.isGood(fix)
-        ekf.updateGnss(fix.speedMs, fix.bearingRad, adapt = good)
+        ekfNoCnn.updateGnss(fix.speedMs, fix.bearingRad, adapt = good)
+        ekfWithCnn.updateGnss(fix.speedMs, fix.bearingRad, adapt = good)
 
         if (good) {
             if (gnssGoodSinceMs == 0L) gnssGoodSinceMs = System.currentTimeMillis()
@@ -122,27 +131,21 @@ class CalibrationEngine(context: Context) {
     private fun onFftWindow(features: FloatArray) {
         val cnnSpeedMs = onlineTrainer.infer(features) ?: return
         if (cnnSpeedMs.isFinite() && cnnSpeedMs in -2f..120f) {
-            // R_cnn = loss + 0.5 floor; smaller as model improves.
-            ekf.updateWithCnn(cnnSpeedMs.coerceAtLeast(0f), onlineTrainer.currentLoss + 0.5f)
+            ekfWithCnn.updateWithCnn(cnnSpeedMs.coerceAtLeast(0f), onlineTrainer.currentLoss + 0.5f)
         }
         publishState()
     }
 
     private fun publishState() {
         val cnnReady = replayBuffer.size() >= 100
-        val cnnFeatures = fftExtractor.latestFeatures
-        val cnnSpeed = if (cnnReady && cnnFeatures != null)
-            onlineTrainer.infer(cnnFeatures)?.coerceAtLeast(0f) ?: 0f
-        else 0f
-
         state = CalibState(
             gnssSpeedMs = lastGnssSpeedMs,
-            ekfSpeedMs = ekf.speedMs(),
-            cnnEkfSpeedMs = cnnSpeed,
+            ekfSpeedMs = ekfNoCnn.speedMs(),
+            cnnEkfSpeedMs = ekfWithCnn.speedMs(),
             hdop = qualityGate.lastFix?.hdop ?: 99f,
             satCount = qualityGate.lastFix?.satCount ?: 0,
-            ekfQMean = ekf.Q.diagMean(),
-            ekfRMean = ekf.R.diagMean(),
+            ekfQMean = ekfNoCnn.Q.diagMean(),
+            ekfRMean = ekfNoCnn.R.diagMean(),
             cnnLoss = onlineTrainer.currentLoss,
             calibrating = qualityGate.lastGood,
             cnnReady = cnnReady,
