@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+build/
+local.properties
+*.iml
+captures/
+.cxx/
+app/src/main/assets/speed_cnn.tflite
+speed_cnn.tflite
+__pycache__/
+*.pyc
+run_log.txt
