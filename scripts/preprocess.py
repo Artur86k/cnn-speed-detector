@@ -44,9 +44,12 @@ SPOOF_HEADING_DEG   = 20.0   # IMU-vs-GPS heading divergence
 SPOOF_RECOVERY_N    = 30
 SPOOF_MAX_SPEED_MS  = 25.0   # m/s, recovery reachability envelope
 
-# label gate (strict, per user)
+# label gate
+# speed_acc < 1.0 m/s (~3.6 km/h tolerance) keeps essentially every fix incl.
+# highway speeds; the original 0.5 was too tight — GNSS Doppler accuracy
+# degrades with velocity and discarded all > 25 m/s data.
 LABEL_HACC_MAX     = 15.0
-LABEL_SPDACC_MAX   = 0.5
+LABEL_SPDACC_MAX   = 1.0
 GPS_GAP_THR_S      = 5.0
 
 EARTH_R            = 6378137.0

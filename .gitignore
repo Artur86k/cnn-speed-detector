@@ -8,6 +8,7 @@ captures/
 __pycache__/
 *.pyc
 run_log.txt
+Figure_*.png
 
 # Raw IMU/GNSS recordings and derived preprocessed/trained artefacts.
 # Too large for git (~10 GB of CSVs across the bigger corpus); regenerate

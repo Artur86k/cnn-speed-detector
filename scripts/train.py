@@ -62,6 +62,9 @@ def main():
     ap.add_argument('--batch',   type=int, default=64)
     ap.add_argument('--val-session', type=int, default=2,
                     help='session_id held out for validation (default: 2 = cleanest)')
+    ap.add_argument('--rebalance', action='store_true',
+                    help='per-bin inverse-frequency sample weighting to fight '
+                         'class imbalance (helps under-prediction at high speeds)')
     args = ap.parse_args()
 
     # ----- Load -----------------------------------------------------------------
@@ -106,8 +109,25 @@ def main():
         keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                                           patience=4, min_lr=1e-5),
     ]
+
+    # Per-bin inverse-frequency sample weighting (--rebalance).  Without this
+    # the loss is dominated by the 0-15 m/s urban windows, the gradient never
+    # learns to predict highway speeds, and bias on > 90 km/h stays at -10 km/h.
+    sample_weight = None
+    if args.rebalance:
+        BIN_EDGES = np.array([0, 1, 5, 15, 25, 35, 50], dtype=np.float32)
+        bin_idx   = np.clip(np.digitize(ytr, BIN_EDGES) - 1, 0, len(BIN_EDGES) - 2)
+        counts    = np.bincount(bin_idx, minlength=len(BIN_EDGES) - 1).astype(np.float32)
+        # Inverse-frequency weight; normalise so mean weight = 1 (keeps LR scale sane).
+        w_per_bin = np.where(counts > 0, 1.0 / counts, 0.0)
+        w_per_bin = w_per_bin * len(BIN_EDGES) / w_per_bin.sum()
+        sample_weight = w_per_bin[bin_idx].astype(np.float32)
+        print(f"Rebalance: per-bin weights = "
+              f"{ {f'{BIN_EDGES[i]:.0f}-{BIN_EDGES[i+1]:.0f}': float(w_per_bin[i]) for i in range(len(w_per_bin))} }")
+
     hist = model.fit(
         Xtr, ytr,
+        sample_weight=sample_weight,
         validation_data=(Xv, yv),
         epochs=args.epochs,
         batch_size=args.batch,

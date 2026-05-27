@@ -171,9 +171,12 @@ def make_windows_from_dir(
     back to the original recording.
     """
     npz_dir = Path(npz_dir)
-    files = sorted(p for p in npz_dir.glob('*.npz') if p.stem not in blocklist
-                                                   and p.stem != 'merged'
-                                                   and p.stem != 'windows')
+    # Skip non-session NPZs that may sit alongside the per-session files.
+    SKIP_STEMS = {'merged', 'windows', 'train_history'}
+    files = sorted(
+        p for p in npz_dir.glob('*.npz')
+        if p.stem not in blocklist and p.stem not in SKIP_STEMS
+    )
 
     X_list, y_list = [], []
     t0_list, tl_list, sid_list, vf_list = [], [], [], []
