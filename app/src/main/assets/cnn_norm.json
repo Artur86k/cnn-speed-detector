@@ -1,0 +1,9 @@
+{
+  "channels":  ["accel_veh_fwd","accel_veh_lat","accel_veh_vrt","gyro_x","gyro_y","gyro_z"],
+  "mean":      [0.241795, 0.175760, -0.016274, -0.0000195, -0.000315, 0.000489],
+  "std":       [1.899573, 2.172208,  0.941029,  0.092616,   0.115425, 0.099529],
+  "target_hz": 200.0,
+  "window_s":  2.0,
+  "input_t":   400,
+  "input_c":   6
+}

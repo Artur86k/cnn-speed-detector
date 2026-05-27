@@ -5,8 +5,11 @@ local.properties
 *.iml
 captures/
 .cxx/
-speed_cnn.tflite
-!app/src/main/assets/speed_cnn.tflite
 __pycache__/
 *.pyc
 run_log.txt
+
+# Raw IMU/GNSS recordings and derived preprocessed/trained artefacts.
+# Too large for git (~10 GB of CSVs across the bigger corpus); regenerate
+# with scripts/preprocess.py + scripts/train.py.
+samples/

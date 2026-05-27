@@ -51,11 +51,6 @@ dependencies {
     // TFLite — 2.16.1+ ships .so files aligned to 16 KB page boundaries
     // (required for apps targeting Android 15+ submitted after 2025-11-01).
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
-
-    // FFT
-    implementation("com.github.wendykierp:JTransforms:3.1")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
